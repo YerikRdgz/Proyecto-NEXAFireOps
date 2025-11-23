@@ -1,378 +1,353 @@
+/**
+ * 🚒 PROYECTO NEXO - VERSIÓN 9 (CORRECCIÓN PANTALLA BLANCA)
+ * ---------------------------------------------------------
+ * - Agregada pantalla de error si el rol no coincide.
+ * - Normalización de roles (mayúsculas/minúsculas).
+ * - Admin: Edición completa.
+ * - Bombero: Perfil y Edición.
+ */
+
 import React, { useState, useEffect } from 'react';
-import { User, Calendar, Clock, DollarSign, LogOut, Users, Briefcase, CheckCircle, Plus } from 'lucide-react';
+import { User, Calendar, Clock, DollarSign, LogOut, Users, Briefcase, CheckCircle, Plus, FileText, Trash2, Edit, Save, X, History, AlertTriangle, HeartPulse, CheckSquare, Filter, Database, Settings, FileBadge } from 'lucide-react';
 
-// --- DATOS DE EJEMPLO (SIMULACIÓN DE BASE DE DATOS) ---
-// Estos datos simulan lo que ya existiría en tu base de datos.
-const initialUsers = [
-  { id: 1, name: 'Admin General', email: 'admin@nexo.com', password: '123', role: 'admin', rate: 0 },
-  { id: 2, name: 'Natalie Lazaro', email: 'bombero@nexo.com', password: '123', role: 'bombero', rate: 60 }, // Tarifa $60/hr
-];
+// --- IMPORTACIONES DE FIREBASE ---
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, query } from 'firebase/firestore';
 
-const initialEvents = [
-  { id: 101, name: 'Mismo Rollo', date: '2025-11-22', startTime: '17:00', endTime: '23:00', location: 'QCC', type: 'Social' },
-];
+// ===============================================================================
+// ⚠️ CONFIGURACIÓN DE FIREBASE ⚠️
+// ===============================================================================
+const firebaseConfig = {
+  apiKey: "AIzaSyD4rN95fc9S4HXKMIooo4Kwda1LxfpaSS8",
+  authDomain: "proyectonexo-abbd0.firebaseapp.com",
+  projectId: "proyectonexo-abbd0",
+  storageBucket: "proyectonexo-abbd0.firebasestorage.app",
+  messagingSenderId: "500540903600",
+  appId: "1:500540903600:web:477500786df3ec5577eb75",
+  measurementId: "G-WXEFQ35YEF"
+};
+// ===============================================================================
 
-// Simula la tabla intermedia de asignaciones
-const initialAssignments = [
-  { eventId: 101, userId: 2 } // Juan Pérez asignado al Festival
-];
+let app, auth, db;
+const isConfigured = firebaseConfig.apiKey !== ""; 
 
-// --- COMPONENTE PRINCIPAL ---
+if (isConfigured) {
+  try {
+    app = initializeApp(firebaseConfig);
+    auth = getAuth(app);
+    db = getFirestore(app);
+  } catch (e) {
+    console.error("Error conectando a Firebase:", e);
+  }
+}
+
+const COLS = { USERS: 'users', EVENTS: 'events', ASSIGNMENTS: 'assignments', SHIFTS: 'shifts' };
+
 export default function App() {
-  // 1. ESTADOS (La memoria de la app)
-  const [user, setUser] = useState(null); // ¿Quién está logueado?
-  const [users, setUsers] = useState(initialUsers); // Lista de usuarios (Mecánica 1)
-  const [events, setEvents] = useState(initialEvents); // Lista de eventos (Mecánica 4)
-  const [assignments, setAssignments] = useState(initialAssignments); // Asignaciones
-  const [shifts, setShifts] = useState([]); // Registro de horas (Mecánica 5)
-  
-  // Vista actual para el Admin (pestañas)
-  const [adminView, setAdminView] = useState('events'); 
+  if (!isConfigured) return <ConfigurationScreen />;
 
-  // --- MECÁNICA 3: INICIO DE SESIÓN ---
+  const [user, setUser] = useState(null);
+  const [users, setUsers] = useState([]); 
+  const [events, setEvents] = useState([]);
+  const [assignments, setAssignments] = useState([]);
+  const [shifts, setShifts] = useState([]);
+  
+  const [adminView, setAdminView] = useState('events'); 
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    signInAnonymously(auth).catch((err) => console.error("Error auth:", err));
+    const unsubscribe = onAuthStateChanged(auth, (u) => { if(u) console.log("Conectado:", u.uid); });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const subscribeTo = (colName, setStateFn) => {
+      return onSnapshot(query(collection(db, colName)), (snapshot) => {
+        setStateFn(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      });
+    };
+    // Suscribirse y manejar loading
+    const unsubUsers = subscribeTo(COLS.USERS, setUsers);
+    const unsubEvents = subscribeTo(COLS.EVENTS, setEvents);
+    const unsubAssign = subscribeTo(COLS.ASSIGNMENTS, setAssignments);
+    const unsubShifts = subscribeTo(COLS.SHIFTS, (data) => { 
+      setShifts(data); 
+      setLoading(false); 
+    });
+
+    return () => { unsubUsers(); unsubEvents(); unsubAssign(); unsubShifts(); };
+  }, []);
+
+  // Auto-cierre de turnos
+  useEffect(() => {
+    if (loading || shifts.length === 0) return;
+    const interval = setInterval(() => {
+      const now = new Date();
+      shifts.forEach(shift => {
+        if (!shift.endTime) {
+          const event = events.find(e => e.id === shift.eventId);
+          if (event) {
+            let eventEnd = new Date(`${event.date}T${event.endTime}`);
+            const eventStart = new Date(`${event.date}T${event.startTime}`);
+            if (eventEnd < eventStart) eventEnd.setDate(eventEnd.getDate() + 1);
+            if (now > eventEnd) {
+              const worker = users.find(u => u.id === shift.userId);
+              updateDoc(doc(db, COLS.SHIFTS, shift.id), {
+                endTime: new Date().toISOString(), autoClosed: true, historicRate: worker ? worker.rate : 0
+              });
+            }
+          }
+        }
+      });
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [shifts, events, users, loading]);
+
+  const dbAdd = (col, data) => addDoc(collection(db, col), data);
+  const dbUpdate = (col, id, data) => updateDoc(doc(db, col, id), data);
+  const dbDelete = (col, id) => deleteDoc(doc(db, col, id));
+
+  const seedDatabase = async () => {
+    setLoading(true);
+    await dbAdd(COLS.USERS, { name: 'Admin General', email: 'admin@nexo.com', password: '123', role: 'admin', rate: 0, birthDate: '1980-01-01', curp: 'ADMIN01', bloodType: 'O+', allergies: 'Ninguna' });
+    await dbAdd(COLS.USERS, { name: 'Natalie Lazaro', email: 'bombero@nexo.com', password: '123', role: 'bombero', rate: 100, birthDate: '1995-05-15', curp: 'LAZA95', bloodType: 'A+', allergies: 'Penicilina' });
+    alert("Datos creados. Inicia sesión.");
+    setLoading(false);
+  };
+
   const handleLogin = (email, password) => {
     const foundUser = users.find(u => u.email === email && u.password === password);
-    if (foundUser) {
-      setUser(foundUser); // Guardamos al usuario en la "memoria" activa
-    } else {
-      alert("Credenciales incorrectas. (Prueba: admin@nexo.com / 123)");
-    }
+    if (foundUser) setUser(foundUser); else alert("Credenciales incorrectas.");
   };
 
   const handleLogout = () => setUser(null);
 
-  // --- RENDERIZADO ---
-  // Si no hay usuario, mostramos el Login
-  if (!user) {
-    return <LoginScreen onLogin={handleLogin} />;
+  // --- RENDERIZADO SEGURO ---
+  if (loading) return <div className="min-h-screen flex items-center justify-center text-slate-500">Cargando sistema...</div>;
+  
+  if (!user) return <LoginScreen onLogin={handleLogin} usersCount={users.length} onSeed={seedDatabase} />;
+  
+  // Normalizamos el rol para evitar errores de mayúsculas/minúsculas
+  const role = (user.role || "").toLowerCase().trim();
+
+  if (role === 'admin') {
+    return <AdminDashboard user={user} onLogout={handleLogout} users={users} events={events} assignments={assignments} shifts={shifts} view={adminView} setView={setAdminView} dbAdd={dbAdd} dbUpdate={dbUpdate} dbDelete={dbDelete} />;
+  }
+  
+  if (role === 'bombero') {
+    return <FirefighterDashboard user={user} onLogout={handleLogout} events={events} assignments={assignments} shifts={shifts} currentUserData={users.find(u => u.id === user.id) || user} dbAdd={dbAdd} dbUpdate={dbUpdate} dbDelete={dbDelete} />;
   }
 
-  // Si es Admin, mostramos Panel Admin
-  if (user.role === 'admin') {
-    return (
-      <AdminDashboard 
-        user={user} 
-        onLogout={handleLogout} 
-        users={users}
-        setUsers={setUsers}
-        events={events}
-        setEvents={setEvents}
-        assignments={assignments}
-        setAssignments={setAssignments}
-        shifts={shifts} // Para la nómina
-        view={adminView}
-        setView={setAdminView}
-      />
-    );
-  }
-
-  // Si es Bombero, mostramos Panel Bombero
-  if (user.role === 'bombero') {
-    return (
-      <FirefighterDashboard 
-        user={user} 
-        onLogout={handleLogout}
-        events={events}
-        assignments={assignments}
-        shifts={shifts}
-        setShifts={setShifts}
-      />
-    );
-  }
+  // PANTALLA DE ERROR (FALLBACK) - Si el rol no coincide con nada
+  return (
+    <div className="min-h-screen bg-red-50 flex flex-col items-center justify-center p-4 text-center">
+      <AlertTriangle size={48} className="text-red-500 mb-4"/>
+      <h1 className="text-2xl font-bold text-red-700">Error de Permisos</h1>
+      <p className="text-slate-700 mt-2">El usuario <strong>{user.name}</strong> tiene un rol desconocido: <code>"{user.role}"</code>.</p>
+      <p className="text-sm text-slate-500 mb-6">Contacta al administrador para corregir tu rol en la base de datos.</p>
+      <button onClick={handleLogout} className="bg-slate-800 text-white px-6 py-2 rounded shadow hover:bg-slate-900">Cerrar Sesión</button>
+    </div>
+  );
 }
 
-// --- PANTALLA DE LOGIN (Mecánica 3) ---
-function LoginScreen({ onLogin }) {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-
+// --- PANTALLA DE AYUDA ---
+function ConfigurationScreen() {
   return (
-    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
-      <div className="bg-white rounded-lg shadow-xl p-8 w-full max-w-md">
-        <div className="flex justify-center mb-6">
-          <div className="bg-red-600 p-3 rounded-full">
-            <User className="text-white w-8 h-8" />
-          </div>
-        </div>
-        <h1 className="text-2xl font-bold text-center text-slate-800 mb-2">NEXO</h1>
-        <p className="text-center text-slate-500 mb-6">Sistema de Gestión de Bomberos</p>
-        
-        <form onSubmit={(e) => { e.preventDefault(); onLogin(email, password); }} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-slate-700">Correo Electrónico</label>
-            <input 
-              type="email" 
-              className="mt-1 w-full p-2 border rounded bg-slate-50 text-slate-900"
-              placeholder="ej. admin@nexo.com"
-              value={email}
-              onChange={e => setEmail(e.target.value)}
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-slate-700">Contraseña</label>
-            <input 
-              type="password" 
-              className="mt-1 w-full p-2 border rounded bg-slate-50 text-slate-900"
-              placeholder="••••••"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-            />
-          </div>
-          <button className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded transition">
-            Iniciar Sesión
-          </button>
-        </form>
-        
-        <div className="mt-6 text-xs text-center text-slate-400">
-          <p>Credenciales Demo:</p>
-          <p>Admin: admin@nexo.com / 123</p>
-          <p>Bombero: bombero@nexo.com / 123</p>
-        </div>
+    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4 text-center">
+      <div className="bg-white p-8 rounded-lg max-w-lg">
+        <Settings size={48} className="mx-auto text-yellow-500 mb-4"/>
+        <h1 className="text-2xl font-bold mb-2">Falta Configuración</h1>
+        <p className="text-slate-600 mb-4">Debes pegar tus llaves de Firebase en el código (App.jsx).</p>
+        <pre className="bg-slate-100 p-2 text-xs text-left rounded">const firebaseConfig = &#123; ... &#125;;</pre>
       </div>
     </div>
   );
 }
 
-// --- PANEL DE ADMINISTRADOR ---
-function AdminDashboard({ user, onLogout, users, setUsers, events, setEvents, assignments, setAssignments, shifts, view, setView }) {
-  
-  // Función para crear usuario (Mecánica 1)
-  const handleCreateUser = (e) => {
+// --- LOGIN ---
+function LoginScreen({ onLogin, usersCount, onSeed }) {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  return (
+    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
+      <div className="bg-white rounded-lg shadow-xl p-8 w-full max-w-md">
+        <div className="flex justify-center mb-6"><div className="bg-red-600 p-3 rounded-full"><User className="text-white w-8 h-8" /></div></div>
+        <h1 className="text-2xl font-bold text-center text-slate-800 mb-6">NEXO</h1>
+        {usersCount === 0 ? (
+          <button onClick={onSeed} className="bg-blue-600 text-white px-4 py-2 rounded w-full flex justify-center gap-2"><Database/> Generar Datos de Prueba</button>
+        ) : (
+          <form onSubmit={(e)=>{e.preventDefault(); onLogin(email, password)}} className="space-y-4">
+            <input placeholder="Correo" className="w-full p-2 border rounded" value={email} onChange={e => setEmail(e.target.value)} />
+            <input type="password" placeholder="Contraseña" className="w-full p-2 border rounded" value={password} onChange={e => setPassword(e.target.value)} />
+            <button className="w-full bg-red-600 text-white font-bold py-2 rounded">Iniciar Sesión</button>
+          </form>
+        )}
+        {usersCount > 0 && <div className="mt-6 text-xs text-center text-slate-400"><p>Admin: admin@nexo.com / 123</p><p>Bombero: bombero@nexo.com / 123</p></div>}
+      </div>
+    </div>
+  );
+}
+
+// --- PANEL ADMIN ---
+function AdminDashboard({ user, onLogout, users, events, assignments, shifts, view, setView, dbAdd, dbUpdate, dbDelete }) {
+  const [editingUser, setEditingUser] = useState(null); // Objeto completo para edición
+  const [editingEvent, setEditingEvent] = useState(null);
+  const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().substring(0, 7));
+
+  // -- USUARIOS --
+  const handleDeleteUser = async (id) => {
+    if (confirm("¿Despedir empleado? Se borrará su historial.")) {
+      await dbDelete(COLS.USERS, id);
+      assignments.filter(a => a.userId === id).forEach(a => dbDelete(COLS.ASSIGNMENTS, a.id));
+    }
+  };
+
+  // Prepara el formulario con los datos del usuario
+  const startEditingUser = (u) => { 
+    setEditingUser(u); 
+    window.scrollTo({ top: 0, behavior: 'smooth' }); 
+  };
+
+  const handleUserSubmit = async (e) => {
     e.preventDefault();
-    const formData = new FormData(e.target);
-    const newUser = {
-      id: Date.now(),
-      name: formData.get('name'),
-      email: formData.get('email'),
-      password: 'temp', // Contraseña por defecto
-      role: formData.get('role'),
-      rate: parseFloat(formData.get('rate') || 0),
+    const f = new FormData(e.target);
+    const userData = {
+      name: f.get('name'), email: f.get('email'), password: f.get('password') || '123', 
+      role: f.get('role'), rate: parseFloat(f.get('rate')||0), 
+      birthDate: f.get('birthDate'), curp: f.get('curp'), 
+      bloodType: f.get('bloodType'), allergies: f.get('allergies')
     };
-    setUsers([...users, newUser]);
-    alert("Usuario creado correctamente");
+
+    if (editingUser) {
+      await dbUpdate(COLS.USERS, editingUser.id, userData);
+      alert("Datos actualizados correctamente.");
+      setEditingUser(null);
+    } else {
+      await dbAdd(COLS.USERS, userData);
+      alert("Usuario registrado.");
+    }
     e.target.reset();
   };
 
-  // Función para crear evento (Mecánica 4)
-  const handleCreateEvent = (e) => {
+  // -- EVENTOS --
+  const handleEventSubmit = async (e) => {
     e.preventDefault();
-    const formData = new FormData(e.target);
-    const newEvent = {
-      id: Date.now(),
-      name: formData.get('eventName'),
-      date: formData.get('eventDate'),
-      startTime: formData.get('startTime'),
-      endTime: formData.get('endTime'),
-      location: formData.get('location'),
-      type: formData.get('type'),
-    };
-    setEvents([...events, newEvent]);
-    alert("Evento creado correctamente");
-    e.target.reset();
-  };
-
-  // Función para asignar personal
-  const handleAssign = (eventId, userId) => {
-    if (assignments.find(a => a.eventId === eventId && a.userId === userId)) return;
-    setAssignments([...assignments, { eventId, userId }]);
-  };
-
-  // --- MECÁNICA 6: CÁLCULO DE NÓMINA ---
-  const calculatePayroll = () => {
-    // Filtramos solo turnos completados (que tengan hora de fin)
-    const completedShifts = shifts.filter(s => s.endTime);
+    const f = new FormData(e.target);
+    const data = { name: f.get('eventName'), date: f.get('eventDate'), startTime: f.get('startTime'), endTime: f.get('endTime'), location: f.get('location'), type: f.get('type'), quota: parseInt(f.get('quota')), deadline: f.get('deadline') };
     
-    return completedShifts.map(shift => {
-      const worker = users.find(u => u.id === shift.userId);
-      const event = events.find(e => e.id === shift.eventId);
-      
-      const start = new Date(shift.startTime);
-      const end = new Date(shift.endTime);
-      const hours = (end - start) / (1000 * 60 * 60); // Milisegundos a horas
-      
-      return {
-        id: shift.id,
-        workerName: worker?.name,
-        eventName: event?.name,
-        hours: hours.toFixed(2),
-        rate: worker?.rate,
-        totalPay: (hours * worker?.rate).toFixed(2)
-      };
-    });
+    if (!editingEvent && new Date(`${data.date}T${data.startTime}`) < new Date()) return alert("No puedes crear eventos pasados.");
+    
+    if (editingEvent) { await dbUpdate(COLS.EVENTS, editingEvent.id, data); alert("Editado."); setEditingEvent(null); }
+    else { await dbAdd(COLS.EVENTS, data); alert("Creado."); }
+    e.target.reset();
   };
 
-  const payrollData = calculatePayroll();
+  // -- NÓMINA --
+  const calculatePayroll = () => {
+    return shifts.filter(s => s.endTime).map(s => {
+      const w = users.find(u => u.id === s.userId); const e = events.find(ev => ev.id === s.eventId);
+      if (!w || !e) return null;
+      const r = s.historicRate !== undefined ? s.historicRate : w.rate;
+      const extra = s.overtime ? Math.round(s.overtime) : 0;
+      return { id: s.id, workerId: w.id, workerName: w.name, eventName: e.name, monthKey: e.date.substring(0, 7), totalPay: (5 * r) + (extra * r), autoClosed: s.autoClosed };
+    }).filter(i => i !== null);
+  };
+  const payroll = calculatePayroll();
+  
+  // Filtros nómina
+  const months = [...new Set(payroll.map(p => p.monthKey))].sort().reverse();
+  if (!months.includes(new Date().toISOString().substring(0,7))) months.unshift(new Date().toISOString().substring(0,7));
+  const summary = Object.values(payroll.filter(i => i.monthKey === selectedMonth).reduce((acc, curr) => {
+    if (!acc[curr.workerId]) acc[curr.workerId] = { name: curr.workerName, total: 0, shifts: 0 };
+    acc[curr.workerId].total += curr.totalPay; acc[curr.workerId].shifts += 1; return acc;
+  }, {}));
+  const history = payroll.reduce((acc, curr) => { if (!acc[curr.monthKey]) acc[curr.monthKey] = []; acc[curr.monthKey].push(curr); return acc; }, {});
 
   return (
     <div className="min-h-screen bg-slate-100">
-      {/* Navbar */}
-      <nav className="bg-slate-900 text-white p-4 shadow-lg flex justify-between items-center">
-        <div className="flex items-center gap-2">
-          <Briefcase className="text-red-500" />
-          <span className="font-bold text-xl">Panel Administrativo</span>
-        </div>
-        <div className="flex items-center gap-4">
-          <span className="text-sm text-slate-300">Hola, {user.name}</span>
-          <button onClick={onLogout} className="text-xs bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded flex items-center gap-1">
-            <LogOut size={14}/> Salir
-          </button>
-        </div>
-      </nav>
-
+      <nav className="bg-slate-900 text-white p-4 flex justify-between items-center"><div className="flex gap-2"><Briefcase className="text-red-500" /><span className="font-bold text-xl">Panel Admin</span></div><div className="flex gap-4"><span className="text-sm">{user.name}</span><button onClick={onLogout} className="text-xs bg-slate-700 px-3 py-1 rounded flex gap-1"><LogOut size={14}/> Salir</button></div></nav>
       <div className="flex">
-        {/* Sidebar */}
-        <div className="w-64 bg-white h-[calc(100vh-64px)] shadow-md hidden md:block">
-          <div className="p-4 space-y-2">
-            <button onClick={() => setView('events')} className={`w-full text-left p-3 rounded flex items-center gap-2 ${view === 'events' ? 'bg-red-50 text-red-600' : 'hover:bg-slate-50'}`}>
-              <Calendar size={18}/> Gestión Eventos
-            </button>
-            <button onClick={() => setView('users')} className={`w-full text-left p-3 rounded flex items-center gap-2 ${view === 'users' ? 'bg-red-50 text-red-600' : 'hover:bg-slate-50'}`}>
-              <Users size={18}/> Gestión Personal
-            </button>
-            <button onClick={() => setView('payroll')} className={`w-full text-left p-3 rounded flex items-center gap-2 ${view === 'payroll' ? 'bg-red-50 text-red-600' : 'hover:bg-slate-50'}`}>
-              <DollarSign size={18}/> Nómina
-            </button>
-          </div>
+        <div className="w-64 bg-white h-[calc(100vh-64px)] hidden md:block p-4 space-y-2">
+          <button onClick={() => setView('events')} className={`w-full text-left p-3 rounded flex gap-2 ${view==='events'?'bg-red-50 text-red-600':''}`}><Calendar size={18}/> Eventos</button>
+          <button onClick={() => setView('users')} className={`w-full text-left p-3 rounded flex gap-2 ${view==='users'?'bg-red-50 text-red-600':''}`}><Users size={18}/> Personal</button>
+          <button onClick={() => setView('payroll')} className={`w-full text-left p-3 rounded flex gap-2 ${view==='payroll'?'bg-red-50 text-red-600':''}`}><DollarSign size={18}/> Nómina</button>
         </div>
-
-        {/* Contenido Principal */}
         <main className="flex-1 p-8 overflow-auto h-[calc(100vh-64px)]">
           
-          {/* VISTA: EVENTOS */}
+          {/* EVENTOS */}
           {view === 'events' && (
             <div className="space-y-6">
-              <div className="bg-white p-6 rounded-lg shadow">
-                <h2 className="text-lg font-bold mb-4 border-b pb-2">Crear Nuevo Evento (Mecánica 4)</h2>
-                <form onSubmit={handleCreateEvent} className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <input name="eventName" required placeholder="Nombre del Evento" className="border p-2 rounded" />
-                  <input name="location" required placeholder="Ubicación" className="border p-2 rounded" />
-                  <input name="eventDate" type="date" required className="border p-2 rounded" />
-                  <input name="type" placeholder="Tipo (Social, Deportivo)" className="border p-2 rounded" />
-                  <div className="flex gap-2">
-                    <input name="startTime" type="time" required className="border p-2 rounded w-full" />
-                    <input name="endTime" type="time" required className="border p-2 rounded w-full" />
-                  </div>
-                  <button type="submit" className="bg-red-600 text-white p-2 rounded hover:bg-red-700 flex items-center justify-center gap-2">
-                    <Plus size={16}/> Crear Evento
-                  </button>
+              <div className="bg-white p-6 rounded shadow border-t-4 border-red-500">
+                <div className="flex justify-between mb-4 border-b pb-2"><h2 className="font-bold">{editingEvent ? 'Editando Evento' : 'Nuevo Evento'}</h2>{editingEvent && <button onClick={()=>setEditingEvent(null)} className="text-sm underline">Cancelar</button>}</div>
+                <form onSubmit={handleEventSubmit} className="grid grid-cols-2 gap-4">
+                  <input name="eventName" required placeholder="Nombre" defaultValue={editingEvent?.name} className="border p-2 rounded" />
+                  <input name="location" required placeholder="Ubicación" defaultValue={editingEvent?.location} className="border p-2 rounded" />
+                  <input name="eventDate" type="date" required defaultValue={editingEvent?.date} className="border p-2 rounded" />
+                  <input name="type" placeholder="Tipo" defaultValue={editingEvent?.type} className="border p-2 rounded" />
+                  <div className="flex gap-2"><input name="startTime" type="time" required defaultValue={editingEvent?.startTime} className="border p-2 rounded w-full" /><input name="endTime" type="time" required defaultValue={editingEvent?.endTime} className="border p-2 rounded w-full" /></div>
+                  <div className="flex gap-2"><input name="quota" type="number" required defaultValue={editingEvent?.quota} placeholder="Cupo" className="border p-2 rounded w-full" /><input name="deadline" type="date" required defaultValue={editingEvent?.deadline} className="border p-2 rounded w-full" /></div>
+                  <button className="col-span-2 bg-red-600 text-white p-2 rounded">{editingEvent ? 'Guardar Cambios' : 'Crear Evento'}</button>
                 </form>
               </div>
-
-              <div className="bg-white p-6 rounded-lg shadow">
-                <h2 className="text-lg font-bold mb-4">Eventos Activos y Asignaciones</h2>
-                {events.map(event => (
-                  <div key={event.id} className="border p-4 rounded mb-4">
-                    <div className="flex justify-between items-start">
-                      <div>
-                        <h3 className="font-bold text-lg">{event.name}</h3>
-                        <p className="text-sm text-slate-500">{event.date} | {event.startTime} - {event.endTime}</p>
-                        <p className="text-sm text-slate-500">{event.location}</p>
-                      </div>
-                      <div className="bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded">{event.type}</div>
-                    </div>
-                    
-                    <div className="mt-4 pt-4 border-t">
-                      <p className="text-sm font-medium mb-2">Asignar Personal:</p>
-                      <div className="flex gap-2 flex-wrap">
-                        {users.filter(u => u.role === 'bombero').map(bombero => {
-                          const isAssigned = assignments.some(a => a.eventId === event.id && a.userId === bombero.id);
-                          return (
-                            <button 
-                              key={bombero.id}
-                              onClick={() => handleAssign(event.id, bombero.id)}
-                              disabled={isAssigned}
-                              className={`text-xs px-3 py-1 rounded border ${isAssigned ? 'bg-green-100 text-green-700 border-green-200' : 'bg-slate-50 hover:bg-slate-100'}`}
-                            >
-                              {isAssigned ? '✓ ' : '+ '} {bombero.name}
-                            </button>
-                          )
-                        })}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <div className="bg-white p-6 rounded shadow"><h2 className="font-bold mb-4">Eventos Activos</h2>{events.map(ev => (<div key={ev.id} className="border p-4 rounded mb-2 flex justify-between items-center"><div><h3 className="font-bold">{ev.name}</h3><p className="text-sm text-slate-500">{ev.date}</p></div><button onClick={()=>{setEditingEvent(ev); window.scrollTo(0,0)}} className="text-blue-600"><Edit size={16}/></button></div>))}</div>
             </div>
           )}
 
-          {/* VISTA: PERSONAL */}
+          {/* USUARIOS (FORMULARIO MEJORADO) */}
           {view === 'users' && (
-            <div className="bg-white p-6 rounded-lg shadow">
-              <h2 className="text-lg font-bold mb-4 border-b pb-2">Registrar Personal (Mecánica 1)</h2>
-              <form onSubmit={handleCreateUser} className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
-                <input name="name" required placeholder="Nombre Completo" className="border p-2 rounded" />
-                <input name="email" type="email" required placeholder="Correo Electrónico" className="border p-2 rounded" />
-                <select name="role" className="border p-2 rounded">
-                  <option value="bombero">Bombero</option>
-                  <option value="admin">Administrador</option>
-                </select>
-                <input name="rate" type="number" placeholder="Tarifa por Hora ($)" className="border p-2 rounded" />
-                <button type="submit" className="md:col-span-2 bg-slate-800 text-white p-2 rounded hover:bg-slate-900">
-                  Registrar Usuario
-                </button>
-              </form>
-
-              <h3 className="font-bold mb-2">Directorio de Personal</h3>
-              <table className="w-full text-sm text-left">
-                <thead className="bg-slate-50 text-slate-500">
-                  <tr>
-                    <th className="p-2">ID</th>
-                    <th className="p-2">Nombre</th>
-                    <th className="p-2">Rol</th>
-                    <th className="p-2">Tarifa/Hr</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {users.map(u => (
-                    <tr key={u.id} className="border-b">
-                      <td className="p-2 text-slate-400">#{u.id}</td>
-                      <td className="p-2 font-medium">{u.name}</td>
-                      <td className="p-2 capitalize">{u.role}</td>
-                      <td className="p-2">${u.rate}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {/* VISTA: NÓMINA */}
-          {view === 'payroll' && (
-            <div className="bg-white p-6 rounded-lg shadow">
-              <h2 className="text-lg font-bold mb-4 flex items-center gap-2">
-                <DollarSign className="text-green-600" /> 
-                Cálculo Automático de Nómina (Mecánica 6)
-              </h2>
-              <p className="text-sm text-slate-500 mb-6">
-                Este cálculo se realiza automáticamente basándose en los registros de horas completados por los bomberos.
-              </p>
-
-              {payrollData.length === 0 ? (
-                <p className="text-center text-slate-400 py-8">No hay turnos completados para calcular pagos.</p>
-              ) : (
-                <table className="w-full text-sm">
-                  <thead className="bg-slate-900 text-white">
-                    <tr>
-                      <th className="p-3 text-left">Bombero</th>
-                      <th className="p-3 text-left">Evento</th>
-                      <th className="p-3 text-right">Horas</th>
-                      <th className="p-3 text-right">Tarifa</th>
-                      <th className="p-3 text-right">Total a Pagar</th>
-                    </tr>
-                  </thead>
+            <div className="space-y-6">
+              <div className="bg-white p-6 rounded shadow border-t-4 border-blue-500">
+                <div className="flex justify-between mb-4 border-b pb-2">
+                  <h2 className="font-bold">{editingUser ? `Editando a: ${editingUser.name}` : 'Registrar Nuevo Personal'}</h2>
+                  {editingUser && <button onClick={()=>setEditingUser(null)} className="text-sm text-red-500 underline">Cancelar Edición</button>}
+                </div>
+                <form onSubmit={handleUserSubmit} className="grid grid-cols-2 gap-4">
+                  <input name="name" required placeholder="Nombre Completo" defaultValue={editingUser?.name} className="border p-2 rounded" />
+                  <input name="email" type="email" required placeholder="Email" defaultValue={editingUser?.email} className="border p-2 rounded" />
+                  <input name="password" placeholder="Contraseña (Opcional al editar)" defaultValue={editingUser ? editingUser.password : '123'} className="border p-2 rounded" />
+                  <input name="curp" required placeholder="CURP" defaultValue={editingUser?.curp} className="border p-2 rounded uppercase" />
+                  <input name="birthDate" type="date" required defaultValue={editingUser?.birthDate} className="border p-2 rounded" />
+                  <select name="bloodType" defaultValue={editingUser?.bloodType} className="border p-2 rounded"><option value="">Tipo de Sangre</option><option value="A+">A+</option><option value="O+">O+</option><option value="B+">B+</option></select>
+                  <input name="allergies" placeholder="Alergias" defaultValue={editingUser?.allergies} className="border p-2 rounded" />
+                  <select name="role" defaultValue={editingUser?.role || 'bombero'} className="border p-2 rounded"><option value="bombero">Bombero</option><option value="admin">Admin</option></select>
+                  <input name="rate" type="number" placeholder="Tarifa ($/hr)" defaultValue={editingUser?.rate} className="border p-2 rounded" />
+                  <button className={`col-span-2 text-white p-2 rounded ${editingUser ? 'bg-blue-600' : 'bg-slate-800'}`}>{editingUser ? 'Actualizar Datos' : 'Registrar Usuario'}</button>
+                </form>
+              </div>
+              
+              <div className="bg-white p-6 rounded shadow">
+                <h2 className="font-bold mb-4">Directorio</h2>
+                <table className="w-full text-sm text-left">
+                  <thead className="bg-slate-50"><tr><th>Nombre</th><th>CURP</th><th>Rol</th><th>Tarifa</th><th>Acciones</th></tr></thead>
                   <tbody>
-                    {payrollData.map((item, idx) => (
-                      <tr key={idx} className="border-b hover:bg-slate-50">
-                        <td className="p-3 font-medium">{item.workerName}</td>
-                        <td className="p-3 text-slate-600">{item.eventName}</td>
-                        <td className="p-3 text-right">{item.hours} hrs</td>
-                        <td className="p-3 text-right text-slate-500">${item.rate}/hr</td>
-                        <td className="p-3 text-right font-bold text-green-700">${item.totalPay}</td>
+                    {users.map(u => (
+                      <tr key={u.id} className="border-b hover:bg-slate-50">
+                        <td className="p-2">{u.name}<br/><span className="text-xs text-slate-400">{u.email}</span></td>
+                        <td className="p-2 text-xs font-mono">{u.curp}</td>
+                        <td className="p-2 capitalize">{u.role}</td>
+                        <td className="p-2 font-bold">${u.rate}</td>
+                        <td className="p-2 flex gap-2">
+                          <button onClick={()=>startEditingUser(u)} className="text-blue-600 hover:bg-blue-100 p-1 rounded" title="Editar Datos Completos"><Edit size={16}/></button>
+                          {u.role!=='admin' && <button onClick={()=>handleDeleteUser(u.id)} className="text-red-600 hover:bg-red-100 p-1 rounded"><Trash2 size={16}/></button>}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
-              )}
+              </div>
+            </div>
+          )}
+
+          {/* NÓMINA */}
+          {view === 'payroll' && (
+            <div className="space-y-6">
+              <div className="bg-white p-6 rounded shadow border-l-4 border-green-500">
+                <div className="flex justify-between mb-4"><h2 className="font-bold flex gap-2"><DollarSign/> Resumen</h2><select value={selectedMonth} onChange={e=>setSelectedMonth(e.target.value)} className="border rounded p-1">{months.map(m=><option key={m} value={m}>{m}</option>)}</select></div>
+                <table className="w-full text-sm"><thead className="bg-slate-100"><tr><th>Empleado</th><th className="text-center">Eventos</th><th className="text-right">Total</th></tr></thead><tbody>{summary.map((s,i)=>(<tr key={i} className="border-b"><td className="p-2">{s.name}</td><td className="text-center">{s.shifts}</td><td className="text-right font-bold text-green-700">${s.total}</td></tr>))}</tbody></table>
+              </div>
+              <div className="bg-white p-6 rounded shadow"><h2 className="font-bold mb-4 flex gap-2"><History/> Histórico</h2>{Object.keys(history).sort().reverse().map(m=>(<div key={m} className="mb-4 border rounded"><div className="bg-slate-800 text-white p-2 font-bold">{m}</div><table className="w-full text-sm"><tbody>{history[m].map(i=>(<tr key={i.id} className="border-b"><td className="p-2">{i.workerName}</td><td className="p-2">{i.eventName} {i.autoClosed && <span className="text-red-500 text-[10px] border border-red-200 px-1 rounded">AUTO</span>}</td><td className="p-2 text-right font-bold text-green-700">${i.totalPay}</td></tr>))}</tbody></table></div>))}</div>
             </div>
           )}
         </main>
@@ -381,133 +356,93 @@ function AdminDashboard({ user, onLogout, users, setUsers, events, setEvents, as
   );
 }
 
-// --- PANEL DE BOMBERO ---
-function FirefighterDashboard({ user, onLogout, events, assignments, shifts, setShifts }) {
-  
-  // Filtrar eventos asignados a este usuario
+// --- PANEL BOMBERO ---
+function FirefighterDashboard({ user, onLogout, events, assignments, shifts, currentUserData, dbAdd, dbUpdate, dbDelete }) {
+  const [tab, setTab] = useState('my-events');
+  const [overtime, setOvertime] = useState({});
+  const [showOvertime, setShowOvertime] = useState({});
+
   const myEventIds = assignments.filter(a => a.userId === user.id).map(a => a.eventId);
   const myEvents = events.filter(e => myEventIds.includes(e.id));
-
-  // --- MECÁNICA 5: REGISTRO DE HORAS ---
+  const available = events.filter(e => !myEventIds.includes(e.id) && assignments.filter(a => a.eventId === e.id).length < e.quota && e.deadline >= new Date().toISOString().split('T')[0]);
   
-  // Fichar Entrada
-  const handleClockIn = (eventId) => {
-    const newShift = {
-      id: Date.now(),
-      userId: user.id,
-      eventId: eventId,
-      startTime: new Date().toISOString(),
-      endTime: null, // Aún no termina
-    };
-    setShifts([...shifts, newShift]);
-  };
+  const history = shifts.filter(s => s.userId === user.id && s.endTime).map(s => {
+    const e = events.find(ev => ev.id === s.eventId);
+    const r = s.historicRate || user.rate;
+    return { ...s, eventName: e?.name, date: e?.date, pay: (5*r) + (Math.round(s.overtime||0)*r) };
+  });
 
-  // Fichar Salida
-  const handleClockOut = (eventId) => {
-    const updatedShifts = shifts.map(shift => {
-      if (shift.userId === user.id && shift.eventId === eventId && !shift.endTime) {
-        return { ...shift, endTime: new Date().toISOString() };
-      }
-      return shift;
-    });
-    setShifts(updatedShifts);
+  const handleClockIn = async (id) => dbAdd(COLS.SHIFTS, { userId: user.id, eventId: id, startTime: new Date().toISOString(), endTime: null, overtime: 0 });
+  const handleClockOut = async (id) => {
+    const s = shifts.find(sh => sh.userId === user.id && sh.eventId === id && !sh.endTime);
+    if (s) dbUpdate(COLS.SHIFTS, s.id, { endTime: new Date().toISOString(), historicRate: currentUserData.rate });
   };
-
-  // Verificar si estoy trabajando ahora mismo en un evento
-  const getActiveShift = (eventId) => {
-    return shifts.find(s => s.userId === user.id && s.eventId === eventId && !s.endTime);
-  };
+  const saveOvertime = async (id) => { await dbUpdate(COLS.SHIFTS, id, { overtime: parseFloat(overtime[id]||0) }); alert("Guardado."); setShowOvertime({...showOvertime, [id]: false}); };
 
   return (
     <div className="min-h-screen bg-slate-100">
-      {/* Navbar Bombero */}
-      <nav className="bg-red-700 text-white p-4 shadow-lg flex justify-between items-center">
-        <div className="flex items-center gap-2">
-          <User className="text-white" />
-          <span className="font-bold text-xl">Portal del Bombero</span>
-        </div>
-        <div className="flex items-center gap-4">
-          <span className="text-sm text-red-100">Hola, {user.name}</span>
-          <button onClick={onLogout} className="text-xs bg-red-800 hover:bg-red-900 px-3 py-1 rounded flex items-center gap-1">
-            <LogOut size={14}/> Salir
-          </button>
-        </div>
-      </nav>
-
+      <nav className="bg-red-700 text-white p-4 flex justify-between shadow-lg"><div className="flex gap-2 font-bold items-center"><User/> Portal Bombero</div><div className="flex gap-4 items-center"><span className="text-sm">Hola, {user.name}</span><button onClick={onLogout} className="text-xs bg-red-800 px-3 py-1 rounded hover:bg-red-900">Salir</button></div></nav>
+      <div className="flex justify-center bg-white shadow mb-6">
+        <button onClick={()=>setTab('my-events')} className={`p-3 ${tab==='my-events'?'text-red-600 border-b-2 border-red-600':''}`}>Mis Eventos</button>
+        <button onClick={()=>setTab('available')} className={`p-3 ${tab==='available'?'text-red-600 border-b-2 border-red-600':''}`}>Disponibles</button>
+        <button onClick={()=>setTab('history')} className={`p-3 ${tab==='history'?'text-red-600 border-b-2 border-red-600':''}`}>Historial</button>
+        <button onClick={()=>setTab('profile')} className={`p-3 ${tab==='profile'?'text-red-600 border-b-2 border-red-600':''}`}>Mi Perfil</button>
+      </div>
       <main className="max-w-4xl mx-auto p-6">
-        <h2 className="text-2xl font-bold text-slate-800 mb-6">Mis Eventos Asignados</h2>
-
-        {myEvents.length === 0 ? (
-          <div className="bg-white p-8 rounded shadow text-center text-slate-500">
-            No tienes eventos asignados en este momento.
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {myEvents.map(event => {
-              const activeShift = getActiveShift(event.id);
-              const eventShifts = shifts.filter(s => s.userId === user.id && s.eventId === event.id && s.endTime);
-
-              return (
-                <div key={event.id} className="bg-white rounded-lg shadow-md overflow-hidden">
-                  <div className="p-6 border-b">
-                    <div className="flex justify-between items-start">
-                      <div>
-                        <h3 className="text-xl font-bold text-slate-800">{event.name}</h3>
-                        <p className="text-slate-500 flex items-center gap-2 mt-1">
-                          <Calendar size={16}/> {event.date} | {event.startTime} - {event.endTime}
-                        </p>
-                        <p className="text-slate-500 flex items-center gap-2 mt-1">
-                          <CheckCircle size={16}/> {event.location}
-                        </p>
-                      </div>
-                      
-                      {/* BOTONES DE FICHAJE */}
-                      <div className="flex flex-col items-end">
-                        {!activeShift ? (
-                          <button 
-                            onClick={() => handleClockIn(event.id)}
-                            className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg font-bold flex items-center gap-2 shadow transition transform hover:scale-105"
-                          >
-                            <Clock /> INICIAR TURNO
-                          </button>
-                        ) : (
-                          <div className="text-right">
-                            <p className="text-sm text-green-600 font-bold mb-2 animate-pulse">● Turno en curso</p>
-                            <button 
-                              onClick={() => handleClockOut(event.id)}
-                              className="bg-red-600 hover:bg-red-700 text-white px-6 py-3 rounded-lg font-bold shadow transition"
-                            >
-                              FINALIZAR TURNO
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Historial breve */}
-                  {eventShifts.length > 0 && (
-                    <div className="bg-slate-50 p-4 text-sm">
-                      <p className="font-bold text-slate-700 mb-2">Turnos completados en este evento:</p>
-                      <ul className="space-y-1">
-                        {eventShifts.map(shift => {
-                          const start = new Date(shift.startTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-                          const end = new Date(shift.endTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-                          return (
-                            <li key={shift.id} className="flex justify-between text-slate-500 border-b border-slate-200 pb-1">
-                              <span>{new Date(shift.startTime).toLocaleDateString()}</span>
-                              <span>{start} - {end}</span>
-                            </li>
-                          )
-                        })}
-                      </ul>
-                    </div>
-                  )}
+        
+        {/* TAB: PERFIL */}
+        {tab === 'profile' && (
+          <div className="bg-white p-8 rounded-lg shadow-md border-t-4 border-red-600">
+            <div className="flex items-center gap-4 mb-6">
+              <div className="bg-slate-100 p-4 rounded-full"><FileBadge size={48} className="text-slate-600"/></div>
+              <div>
+                <h2 className="text-2xl font-bold text-slate-800">{currentUserData.name}</h2>
+                <p className="text-slate-500">{currentUserData.email}</p>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="p-4 bg-slate-50 rounded border">
+                <p className="text-xs text-slate-400 uppercase tracking-wider font-bold">Información Laboral</p>
+                <div className="mt-2 space-y-2">
+                  <p className="text-sm"><strong>Rol:</strong> <span className="capitalize">{currentUserData.role}</span></p>
+                  <p className="text-sm"><strong>Tarifa Actual:</strong> ${currentUserData.rate}/hora</p>
+                  <p className="text-sm"><strong>ID Sistema:</strong> {currentUserData.id.substring(0,8)}...</p>
                 </div>
-              );
-            })}
+              </div>
+              <div className="p-4 bg-blue-50 rounded border border-blue-100">
+                <p className="text-xs text-blue-400 uppercase tracking-wider font-bold">Información Médica y Personal</p>
+                <div className="mt-2 space-y-2">
+                  <p className="text-sm"><strong>CURP:</strong> <span className="font-mono">{currentUserData.curp}</span></p>
+                  <p className="text-sm"><strong>Fecha Nacimiento:</strong> {currentUserData.birthDate}</p>
+                  <p className="text-sm"><strong>Tipo de Sangre:</strong> <span className="bg-red-200 text-red-800 px-1 rounded font-bold text-xs">{currentUserData.bloodType}</span></p>
+                  <p className="text-sm"><strong>Alergias:</strong> {currentUserData.allergies || 'Ninguna'}</p>
+                </div>
+              </div>
+            </div>
           </div>
         )}
+
+        {tab === 'my-events' && myEvents.map(e => {
+          const active = shifts.find(s => s.userId === user.id && s.eventId === e.id && !s.endTime);
+          const completed = shifts.find(s => s.userId === user.id && s.eventId === e.id && s.endTime);
+          return (
+            <div key={e.id} className="bg-white rounded shadow p-6 mb-4 border-l-4 border-red-600 flex justify-between">
+              <div><h3 className="font-bold text-lg">{e.name}</h3><p className="text-slate-500">{e.date} | {e.startTime} - {e.endTime}</p></div>
+              <div>
+                {completed ? (
+                  <div className="text-right">
+                    <button disabled className="bg-slate-300 text-slate-500 px-4 py-2 rounded mb-2 flex items-center gap-1"><CheckCircle size={16}/> Completado</button>
+                    <div className="text-sm"><input type="checkbox" checked={showOvertime[completed.id]||false} onChange={ev=>setShowOvertime({...showOvertime, [completed.id]: ev.target.checked})}/> Extra?</div>
+                    {showOvertime[completed.id] && <div className="flex gap-1 mt-1 animate-in fade-in"><input className="w-16 border rounded p-1" placeholder="Hrs" onChange={ev=>setOvertime({...overtime, [completed.id]: ev.target.value})}/><button onClick={()=>saveOvertime(completed.id)} className="bg-slate-800 text-white px-2 rounded text-xs">OK</button></div>}
+                    {completed.overtime > 0 && <p className="text-xs text-green-600 font-bold">+{completed.overtime}h extra</p>}
+                  </div>
+                ) : active ? <button onClick={()=>handleClockOut(e.id)} className="bg-red-600 text-white px-6 py-3 rounded shadow hover:bg-red-700">Finalizar Turno</button> : <button onClick={()=>handleClockIn(e.id)} className="bg-green-600 text-white px-6 py-3 rounded shadow hover:bg-green-700 flex items-center gap-2"><Clock/> Iniciar</button>}
+              </div>
+            </div>
+          )
+        })}
+        {tab === 'available' && available.map(e => (<div key={e.id} className="bg-white rounded shadow p-6 mb-4 flex justify-between items-center"><div><h3 className="font-bold text-lg">{e.name}</h3><p className="text-slate-500">{e.date} | {e.location}</p></div><button onClick={()=>dbAdd(COLS.ASSIGNMENTS, {eventId: e.id, userId: user.id})} className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 flex items-center gap-1"><Plus size={16}/> Inscribirme</button></div>))}
+        {tab === 'history' && <div className="bg-white rounded shadow overflow-hidden"><table className="w-full text-sm text-left"><thead className="bg-slate-50"><tr><th className="p-4">Evento</th><th>Fecha</th><th className="text-right p-4">Pago</th></tr></thead><tbody>{history.map(h=>(<tr key={h.id} className="border-b hover:bg-slate-50"><td className="p-4 font-medium">{h.eventName}</td><td className="text-slate-500">{h.date}</td><td className="text-right p-4 font-bold text-green-700">${h.pay.toFixed(2)}</td></tr>))}</tbody></table></div>}
       </main>
     </div>
   );
