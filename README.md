@@ -76,7 +76,7 @@ Debido a limitaciones de tiempo, quedaron pendientes:
 
 **¿Por qué?**
 
-Dimos prioridad a otras funciones de la página, ya que cuando estábamos creando la pagina se nos ocurrían nuevas funciones o cambios y dejamos de lado esas funciones.
+Dimos prioridad a otras funciones de la página, ya que cuando estábamos creando la página se nos ocurrían nuevas funciones o cambios y dejamos de lado esas funciones.
 
 **¿Qué haría diferente?**
 Comenzaría con la base de datos desde el día 1.
